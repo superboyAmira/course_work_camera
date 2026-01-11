@@ -21,7 +21,10 @@ import androidx.camera.view.LifecycleCameraController
 import androidx.camera.view.PreviewView
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
@@ -41,6 +44,9 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.CameraAlt
@@ -61,11 +67,13 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.NavigationBarDefaults
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -78,12 +86,16 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.livedata.observeAsState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.isSpecified
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -106,7 +118,9 @@ import ru.miit.course_work_camera.ui.theme.Course_work_cameraTheme
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.concurrent.TimeUnit
+import java.util.UUID
 import kotlinx.coroutines.CoroutineScope
+import kotlin.math.roundToInt
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -181,7 +195,10 @@ private fun CourseWorkApp(viewModel: CameraViewModel = viewModel(factory = Camer
     Scaffold(
         snackbarHost = { SnackbarHost(snackbarHostState) },
         bottomBar = {
-            NavigationBar {
+            NavigationBar(
+                containerColor = Color.Transparent,
+                tonalElevation = 0.dp
+            ) {
                 val backStack by navController.currentBackStackEntryAsState()
                 val currentRoute = backStack?.destination?.route ?: AppDestination.Photo.route
                 AppDestination.values().forEach { destination ->
@@ -450,7 +467,7 @@ private fun MediaPreviewDialog(
                     style = MaterialTheme.typography.bodyLarge,
                     fontWeight = FontWeight.Medium
                 )
-                Text(
+    Text(
                     text = formatDate(item),
                     style = MaterialTheme.typography.bodyMedium
                 )
@@ -469,6 +486,7 @@ private fun CameraScreen(
 ) {
     val lifecycleOwner = LocalLifecycleOwner.current
     val context = LocalContext.current
+    val density = LocalDensity.current
     val scope = rememberCoroutineScope()
 
     val controller = remember {
@@ -479,10 +497,21 @@ private fun CameraScreen(
     var previewView by remember { mutableStateOf<PreviewView?>(null) }
     var cameraSelector by remember { mutableStateOf(CameraSelector.DEFAULT_BACK_CAMERA) }
     var showFlash by remember { mutableStateOf(false) }
+    var autofocusRequest by remember { mutableStateOf(UUID.randomUUID() to Offset.Unspecified) }
+    val autofocusRequestId = autofocusRequest.first
+    val showAutofocusIndicator = autofocusRequest.second.isSpecified
+    val autofocusCoords = remember(autofocusRequestId) { autofocusRequest.second }
     val isRecording by viewModel.isRecording.collectAsState()
     val durationMs by viewModel.recordingDurationMs.collectAsState()
     val zoomState by controller.zoomState.observeAsState()
     val flashAlpha by animateFloatAsState(if (showFlash) 0.8f else 0f, label = "flash")
+
+    if (showAutofocusIndicator) {
+        LaunchedEffect(autofocusRequestId) {
+            delay(1000)
+            autofocusRequest = autofocusRequestId to Offset.Unspecified
+        }
+    }
 
     LaunchedEffect(cameraSelector, lifecycleOwner) {
         controller.cameraSelector = cameraSelector
@@ -490,27 +519,51 @@ private fun CameraScreen(
     }
 
     Scaffold(
+//        contentColor = Color.Transparent,
         modifier = Modifier.fillMaxSize(),
+        contentWindowInsets = WindowInsets(0),
         topBar = {
             TopAppBar(
                 title = {
                     Text(if (mode == CameraMode.Photo) "Фото" else "Видео")
                 },
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = Color.Transparent,
+                    scrolledContainerColor = Color.Transparent
+                ),
                 actions = {
-                    IconButton(onClick = {
-                        if (isRecording) {
-                            viewModel.stopVideoRecording()
-                        }
-                        cameraSelector =
-                            if (cameraSelector == CameraSelector.DEFAULT_BACK_CAMERA) {
+                    IconButton(
+                        onClick = {
+                            val newSelector = if (cameraSelector == CameraSelector.DEFAULT_BACK_CAMERA) {
                                 CameraSelector.DEFAULT_FRONT_CAMERA
                             } else {
                                 CameraSelector.DEFAULT_BACK_CAMERA
                             }
-                    }) {
+                            
+                            if (isRecording && mode == CameraMode.Video) {
+                                // Во время записи видео - переключаем с остановкой/запуском
+                                val hasAudio = checkPermissions(
+                                    context,
+                                    listOf(Manifest.permission.RECORD_AUDIO)
+                                )
+                                viewModel.switchCameraDuringRecording(
+                                    controller = controller,
+                                    hasAudioPermission = hasAudio,
+                                    onCameraSwitched = {
+                                        cameraSelector = newSelector
+                                    },
+                                    onError = { showMessage(scope, snackbarHostState, it) }
+                                )
+                            } else {
+                                // Обычное переключение камеры
+                                cameraSelector = newSelector
+                            }
+                        }
+                    ) {
                         Icon(
                             imageVector = Icons.Default.FlipCameraAndroid,
-                            contentDescription = "Сменить камеру"
+                            contentDescription = "Сменить камеру",
+                            tint = Color.White
                         )
                     }
                 }
@@ -537,7 +590,12 @@ private fun CameraScreen(
                         }
                         CameraMode.Video -> {
                             if (isRecording) {
-                                viewModel.stopVideoRecording()
+                                viewModel.stopVideoRecording(
+                                    onFinalSaved = {
+                                        showMessage(scope, snackbarHostState, "Видео сохранено")
+                                    },
+                                    onError = { showMessage(scope, snackbarHostState, it) }
+                                )
                             } else {
                                 val hasAudio = checkPermissions(
                                     context,
@@ -546,9 +604,7 @@ private fun CameraScreen(
                                 viewModel.startVideoRecording(
                                     controller = controller,
                                     hasAudioPermission = hasAudio,
-                                    onSaved = {
-                                        showMessage(scope, snackbarHostState, "Видео сохранено")
-                                    },
+                                    onSaved = { /* Фрагмент сохранен */ },
                                     onError = { showMessage(scope, snackbarHostState, it) }
                                 )
                             }
@@ -593,6 +649,7 @@ private fun CameraScreen(
                                 factory = previewView?.meteringPointFactory,
                                 controller = controller
                             )
+                            autofocusRequest = UUID.randomUUID() to offset
                         }
                     }
             )
@@ -611,6 +668,28 @@ private fun CameraScreen(
                     .fillMaxSize()
                     .background(Color.White.copy(alpha = flashAlpha))
             )
+
+            AnimatedVisibility(
+                visible = showAutofocusIndicator && autofocusCoords.isSpecified,
+                enter = fadeIn(),
+                exit = fadeOut(),
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .offset {
+                        val half = with(density) { 24.dp.toPx() }.roundToInt()
+                        val coords = if (autofocusCoords.isSpecified) autofocusCoords else Offset.Zero
+                        IntOffset(
+                            coords.x.roundToInt() - half,
+                            coords.y.roundToInt() - half
+                        )
+                    }
+            ) {
+                Spacer(
+                    modifier = Modifier
+                        .size(48.dp)
+                        .border(2.dp, Color.White, CircleShape)
+                )
+            }
         }
     }
 }

@@ -22,7 +22,12 @@
         android:label="@string/app_name"
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
-        android:theme="@style/Theme.Course_work_camera">
+        android:theme="@style/Theme.Course_work_camera"
+        android:enableOnBackInvokedCallback="true">
+
+        <property
+            android:name="android:attributionTags"
+            android:value="media" />
         <activity
             android:name=".MainActivity"
             android:exported="true"

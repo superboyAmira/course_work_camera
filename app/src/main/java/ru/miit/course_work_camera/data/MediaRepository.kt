@@ -194,6 +194,34 @@ class MediaRepository(private val context: Context) {
             val file = File(legacyDirectory(folder), displayName)
             Uri.fromFile(file)
         } else null
+
+    suspend fun saveVideoToMediaStore(file: File): Uri = withContext(Dispatchers.IO) {
+        val displayName = "MERGED_${System.currentTimeMillis()}.mp4"
+        val values = ContentValues().apply {
+            put(MediaStore.Video.Media.DISPLAY_NAME, displayName)
+            put(MediaStore.Video.Media.MIME_TYPE, "video/mp4")
+            put(MediaStore.Video.Media.DATE_ADDED, System.currentTimeMillis() / 1000)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                put(MediaStore.Video.Media.RELATIVE_PATH, VIDEOS_FOLDER)
+            }
+        }
+
+        val collection = videosCollection()
+        val uri = resolver.insert(collection, values)
+            ?: throw IllegalStateException("Failed to create MediaStore entry")
+
+        try {
+            resolver.openOutputStream(uri)?.use { output ->
+                file.inputStream().use { input ->
+                    input.copyTo(output)
+                }
+            }
+            uri
+        } catch (e: Exception) {
+            resolver.delete(uri, null, null)
+            throw e
+        }
+    }
 }
 
 data class ImageRequest(
