@@ -199,37 +199,6 @@ private fun CourseWorkApp(viewModel: CameraViewModel = viewModel(factory = Camer
 
     Scaffold(
         snackbarHost = { SnackbarHost(snackbarHostState) },
-        bottomBar = {
-            NavigationBar(
-                containerColor = Color.Transparent,
-                tonalElevation = 0.dp
-            ) {
-                val backStack by navController.currentBackStackEntryAsState()
-                val currentRoute = backStack?.destination?.route ?: AppDestination.Photo.route
-                AppDestination.values().forEach { destination ->
-                    NavigationBarItem(
-                        selected = currentRoute == destination.route,
-                        onClick = {
-                            navController.navigate(destination.route) {
-                                popUpTo(navController.graph.findStartDestination().id) {
-                                    saveState = true
-                                }
-                                launchSingleTop = true
-                                restoreState = true
-                            }
-                        },
-                        label = { Text(labelForDestination(destination)) },
-                        icon = {
-                            when (destination) {
-                                AppDestination.Photo -> Icon(Icons.Default.Photo, contentDescription = null)
-                                AppDestination.Video -> Icon(Icons.Default.Movie, contentDescription = null)
-                                AppDestination.Gallery -> Icon(Icons.Outlined.PhotoLibrary, contentDescription = null)
-                            }
-                        }
-                    )
-                }
-            }
-        },
         modifier = Modifier.fillMaxSize()
     ) { padding ->
         NavHost(
@@ -246,6 +215,12 @@ private fun CourseWorkApp(viewModel: CameraViewModel = viewModel(factory = Camer
                     onOpenGallery = {
                         navController.navigate(AppDestination.Gallery.route)
                     },
+                    onSwitchMode = { newMode ->
+                        when (newMode) {
+                            CameraMode.Photo -> navController.navigate(AppDestination.Photo.route)
+                            CameraMode.Video -> navController.navigate(AppDestination.Video.route)
+                        }
+                    },
                     snackbarHostState = snackbarHostState
                 )
             }
@@ -255,6 +230,12 @@ private fun CourseWorkApp(viewModel: CameraViewModel = viewModel(factory = Camer
                     viewModel = viewModel,
                     onOpenGallery = {
                         navController.navigate(AppDestination.Gallery.route)
+                    },
+                    onSwitchMode = { newMode ->
+                        when (newMode) {
+                            CameraMode.Photo -> navController.navigate(AppDestination.Photo.route)
+                            CameraMode.Video -> navController.navigate(AppDestination.Video.route)
+                        }
                     },
                     snackbarHostState = snackbarHostState
                 )
@@ -486,6 +467,7 @@ private fun CameraScreen(
     mode: CameraMode,
     viewModel: CameraViewModel,
     onOpenGallery: () -> Unit,
+    onSwitchMode: (CameraMode) -> Unit,
     snackbarHostState: SnackbarHostState
 ) {
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -554,7 +536,7 @@ private fun CameraScreen(
             modifier = Modifier.fillMaxSize()
         )
 
-        // Прозрачный слой для перехвата жестов (поверх AndroidView)
+        // Прозрачный слой для перехвата жестов и UI элементов (поверх AndroidView)
         Box(
             modifier = Modifier
                 .fillMaxSize()
@@ -584,7 +566,154 @@ private fun CameraScreen(
                         focusPoint = offset
                     }
                 }
-        )
+        ) {
+            // Кнопка смены камеры (справа вверху)
+            IconButton(
+                onClick = {
+                    val newSelector = if (cameraSelector == CameraSelector.DEFAULT_BACK_CAMERA) {
+                        CameraSelector.DEFAULT_FRONT_CAMERA
+                    } else {
+                        CameraSelector.DEFAULT_BACK_CAMERA
+                    }
+                    
+                    if (isRecording && mode == CameraMode.Video) {
+                        val hasAudio = checkPermissions(context, listOf(Manifest.permission.RECORD_AUDIO))
+                        viewModel.switchCameraDuringRecording(
+                            controller = controller,
+                            hasAudioPermission = hasAudio,
+                            onCameraSwitched = { cameraSelector = newSelector },
+                            onError = { showMessage(scope, snackbarHostState, it) }
+                        )
+                    } else {
+                        cameraSelector = newSelector
+                    }
+                },
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(16.dp)
+                    .size(48.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Default.FlipCameraAndroid,
+                    contentDescription = "Сменить камеру",
+                    tint = Color.White,
+                    modifier = Modifier.size(32.dp)
+                )
+            }
+
+            // Переключатель Photo/Video (внизу справа)
+            Row(
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(end = 24.dp, bottom = 40.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                // Кнопка Photo
+                IconButton(
+                    onClick = { onSwitchMode(CameraMode.Photo) },
+                    modifier = Modifier
+                        .size(48.dp)
+                        .background(
+                            if (mode == CameraMode.Photo) Color.White else Color.White.copy(alpha = 0.3f),
+                            shape = CircleShape
+                        )
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Photo,
+                        contentDescription = "Фото",
+                        tint = if (mode == CameraMode.Photo) Color.Black else Color.White
+                    )
+                }
+                
+                // Кнопка Video
+                IconButton(
+                    onClick = { onSwitchMode(CameraMode.Video) },
+                    modifier = Modifier
+                        .size(48.dp)
+                        .background(
+                            if (mode == CameraMode.Video) Color.White else Color.White.copy(alpha = 0.3f),
+                            shape = CircleShape
+                        )
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Movie,
+                        contentDescription = "Видео",
+                        tint = if (mode == CameraMode.Video) Color.Black else Color.White
+                    )
+                }
+            }
+
+            // Кнопка захвата (внизу по центру)
+            IconButton(
+                onClick = {
+                    when (mode) {
+                        CameraMode.Photo -> {
+                            Log.d("CameraScreen", "Photo capture button clicked")
+                            viewModel.takePhoto(
+                                controller = controller,
+                                onResult = { uri ->
+                                    Log.d("CameraScreen", "Photo captured successfully: $uri")
+                                    scope.launch {
+                                        delay(16) // 1 frame @ 60fps
+                                        Log.d("CameraScreen", "Triggering flash animation: showFlash=true")
+                                        showFlash = true
+                                        delay(150) // Держим вспышку дольше
+                                        Log.d("CameraScreen", "Hiding flash after 150ms: showFlash=false")
+                                        showFlash = false
+                                    }
+                                },
+                                onError = { error ->
+                                    Log.e("CameraScreen", "Photo capture failed: $error")
+                                    showMessage(scope, snackbarHostState, error)
+                                }
+                            )
+                        }
+                        CameraMode.Video -> {
+                            if (isRecording) {
+                                viewModel.stopVideoRecording(
+                                    onFinalSaved = {
+                                        showMessage(scope, snackbarHostState, "Видео сохранено")
+                                    },
+                                    onError = { showMessage(scope, snackbarHostState, it) }
+                                )
+                            } else {
+                                val hasAudio = checkPermissions(context, listOf(Manifest.permission.RECORD_AUDIO))
+                                viewModel.startVideoRecording(
+                                    controller = controller,
+                                    hasAudioPermission = hasAudio,
+                                    onSaved = { /* Фрагмент сохранен */ },
+                                    onError = { showMessage(scope, snackbarHostState, it) }
+                                )
+                            }
+                        }
+                    }
+                },
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(bottom = 40.dp)
+                    .size(72.dp)
+                    .background(
+                        if (isRecording) Color.Red else Color.White,
+                        shape = if (isRecording) RoundedCornerShape(12.dp) else CircleShape
+                    )
+            ) {}
+
+            // Кнопка галереи (внизу слева)
+            IconButton(
+                onClick = onOpenGallery,
+                modifier = Modifier
+                    .align(Alignment.BottomStart)
+                    .padding(start = 32.dp, bottom = 40.dp)
+                    .size(56.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Default.PhotoLibrary,
+                    contentDescription = "Галерея",
+                    tint = Color.White,
+                    modifier = Modifier.size(28.dp)
+                )
+            }
+        }
 
         // Вспышка при фото
         Box(
@@ -623,104 +752,6 @@ private fun CameraScreen(
                 .padding(top = 64.dp)
         ) {
             RecordingIndicator(durationMs = durationMs)
-        }
-
-        // Кнопка смены камеры (справа вверху)
-        IconButton(
-            onClick = {
-                val newSelector = if (cameraSelector == CameraSelector.DEFAULT_BACK_CAMERA) {
-                    CameraSelector.DEFAULT_FRONT_CAMERA
-                } else {
-                    CameraSelector.DEFAULT_BACK_CAMERA
-                }
-                
-                if (isRecording && mode == CameraMode.Video) {
-                    val hasAudio = checkPermissions(context, listOf(Manifest.permission.RECORD_AUDIO))
-                    viewModel.switchCameraDuringRecording(
-                        controller = controller,
-                        hasAudioPermission = hasAudio,
-                        onCameraSwitched = { cameraSelector = newSelector },
-                        onError = { showMessage(scope, snackbarHostState, it) }
-                    )
-                } else {
-                    cameraSelector = newSelector
-                }
-            },
-            modifier = Modifier
-                .align(Alignment.TopEnd)
-                .padding(16.dp)
-                .size(48.dp)
-        ) {
-            Icon(
-                imageVector = Icons.Default.FlipCameraAndroid,
-                contentDescription = "Сменить камеру",
-                tint = Color.White,
-                modifier = Modifier.size(32.dp)
-            )
-        }
-
-        // Нижняя панель управления
-        Column(
-            modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .fillMaxWidth()
-                .padding(bottom = 32.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(24.dp)
-        ) {
-            // Кнопка захвата
-            IconButton(
-                onClick = {
-                    when (mode) {
-                        CameraMode.Photo -> {
-                            Log.d("CameraScreen", "Photo capture button clicked")
-                            viewModel.takePhoto(
-                                controller = controller,
-                                onResult = { uri ->
-                                    Log.d("CameraScreen", "Photo captured successfully: $uri")
-                                    scope.launch {
-                                        // Небольшая задержка для рендеринга
-                                        delay(16) // 1 frame @ 60fps
-                                        Log.d("CameraScreen", "Triggering flash animation: showFlash=true")
-                                        showFlash = true
-                                        delay(150) // Держим вспышку дольше
-                                        Log.d("CameraScreen", "Hiding flash after 150ms: showFlash=false")
-                                        showFlash = false
-                                    }
-                                },
-                                onError = { error ->
-                                    Log.e("CameraScreen", "Photo capture failed: $error")
-                                    showMessage(scope, snackbarHostState, error)
-                                }
-                            )
-                        }
-                        CameraMode.Video -> {
-                            if (isRecording) {
-                                viewModel.stopVideoRecording(
-                                    onFinalSaved = {
-                                        showMessage(scope, snackbarHostState, "Видео сохранено")
-                                    },
-                                    onError = { showMessage(scope, snackbarHostState, it) }
-                                )
-                            } else {
-                                val hasAudio = checkPermissions(context, listOf(Manifest.permission.RECORD_AUDIO))
-                                viewModel.startVideoRecording(
-                                    controller = controller,
-                                    hasAudioPermission = hasAudio,
-                                    onSaved = { /* Фрагмент сохранен */ },
-                                    onError = { showMessage(scope, snackbarHostState, it) }
-                                )
-                            }
-                        }
-                    }
-                },
-                modifier = Modifier
-                    .size(72.dp)
-                    .background(
-                        if (isRecording) Color.Red else Color.White,
-                        shape = if (isRecording) RoundedCornerShape(12.dp) else CircleShape
-                    )
-            ) {}
         }
     }
 }
