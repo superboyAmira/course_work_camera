@@ -8,6 +8,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
+import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -21,6 +22,7 @@ import androidx.camera.view.LifecycleCameraController
 import androidx.camera.view.PreviewView
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
@@ -46,7 +48,9 @@ import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.CameraAlt
@@ -54,6 +58,7 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.FlipCameraAndroid
 import androidx.compose.material.icons.filled.Movie
 import androidx.compose.material.icons.filled.Photo
+import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.PlayCircleFilled
 import androidx.compose.material.icons.outlined.PhotoLibrary
 import androidx.compose.material3.AlertDialog
@@ -331,7 +336,7 @@ private fun GalleryScreen(
         viewModel.refreshMedia()
     }
 
-    Column(modifier = Modifier.fillMaxSize()) {
+    Column(modifier = Modifier.fillMaxSize().background(Color.Transparent)) {
         TopAppBar(
             title = { Text("Галерея") },
             navigationIcon = {
@@ -476,7 +481,6 @@ private fun MediaPreviewDialog(
     )
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun CameraScreen(
     mode: CameraMode,
@@ -486,7 +490,6 @@ private fun CameraScreen(
 ) {
     val lifecycleOwner = LocalLifecycleOwner.current
     val context = LocalContext.current
-    val density = LocalDensity.current
     val scope = rememberCoroutineScope()
 
     val controller = remember {
@@ -497,19 +500,34 @@ private fun CameraScreen(
     var previewView by remember { mutableStateOf<PreviewView?>(null) }
     var cameraSelector by remember { mutableStateOf(CameraSelector.DEFAULT_BACK_CAMERA) }
     var showFlash by remember { mutableStateOf(false) }
-    var autofocusRequest by remember { mutableStateOf(UUID.randomUUID() to Offset.Unspecified) }
-    val autofocusRequestId = autofocusRequest.first
-    val showAutofocusIndicator = autofocusRequest.second.isSpecified
-    val autofocusCoords = remember(autofocusRequestId) { autofocusRequest.second }
+    var focusPoint by remember { mutableStateOf<Offset?>(null) }
+    
     val isRecording by viewModel.isRecording.collectAsState()
     val durationMs by viewModel.recordingDurationMs.collectAsState()
     val zoomState by controller.zoomState.observeAsState()
-    val flashAlpha by animateFloatAsState(if (showFlash) 0.8f else 0f, label = "flash")
+    val flashAlpha by animateFloatAsState(
+        targetValue = if (showFlash) 0.8f else 0f,
+        animationSpec = tween(durationMillis = 50), // Быстрая анимация появления
+        label = "flash",
+        finishedListener = { finalValue ->
+            Log.d("CameraScreen", "Flash animation finished: finalValue=$finalValue, showFlash=$showFlash")
+        }
+    )
 
-    if (showAutofocusIndicator) {
-        LaunchedEffect(autofocusRequestId) {
+    // Логирование изменения вспышки
+    LaunchedEffect(showFlash) {
+        Log.d("CameraScreen", "Flash state changed: showFlash=$showFlash, flashAlpha=$flashAlpha")
+    }
+
+    // Автоматически скрываем фокус через 1 секунду
+    LaunchedEffect(focusPoint) {
+        if (focusPoint != null) {
+            Log.d("CameraScreen", "Focus point set: x=${focusPoint!!.x}, y=${focusPoint!!.y}")
             delay(1000)
-            autofocusRequest = autofocusRequestId to Offset.Unspecified
+            Log.d("CameraScreen", "Focus point hiding after 1 second")
+            focusPoint = null
+        } else {
+            Log.d("CameraScreen", "Focus point cleared")
         }
     }
 
@@ -518,74 +536,162 @@ private fun CameraScreen(
         controller.bindToLifecycle(lifecycleOwner)
     }
 
-    Scaffold(
-//        contentColor = Color.Transparent,
-        modifier = Modifier.fillMaxSize(),
-        contentWindowInsets = WindowInsets(0),
-        topBar = {
-            TopAppBar(
-                title = {
-                    Text(if (mode == CameraMode.Photo) "Фото" else "Видео")
-                },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = Color.Transparent,
-                    scrolledContainerColor = Color.Transparent
-                ),
-                actions = {
-                    IconButton(
-                        onClick = {
-                            val newSelector = if (cameraSelector == CameraSelector.DEFAULT_BACK_CAMERA) {
-                                CameraSelector.DEFAULT_FRONT_CAMERA
-                            } else {
-                                CameraSelector.DEFAULT_BACK_CAMERA
-                            }
-                            
-                            if (isRecording && mode == CameraMode.Video) {
-                                // Во время записи видео - переключаем с остановкой/запуском
-                                val hasAudio = checkPermissions(
-                                    context,
-                                    listOf(Manifest.permission.RECORD_AUDIO)
-                                )
-                                viewModel.switchCameraDuringRecording(
-                                    controller = controller,
-                                    hasAudioPermission = hasAudio,
-                                    onCameraSwitched = {
-                                        cameraSelector = newSelector
-                                    },
-                                    onError = { showMessage(scope, snackbarHostState, it) }
-                                )
-                            } else {
-                                // Обычное переключение камеры
-                                cameraSelector = newSelector
-                            }
-                        }
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.FlipCameraAndroid,
-                            contentDescription = "Сменить камеру",
-                            tint = Color.White
-                        )
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Black)
+    ) {
+        // Превью камеры
+        AndroidView(
+            factory = { viewContext ->
+                PreviewView(viewContext).apply {
+                    scaleType = PreviewView.ScaleType.FILL_CENTER
+                    implementationMode = PreviewView.ImplementationMode.COMPATIBLE
+                    this.controller = controller
+                    previewView = this
+                }
+            },
+            modifier = Modifier.fillMaxSize()
+        )
+
+        // Прозрачный слой для перехвата жестов (поверх AndroidView)
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .pointerInput(controller, zoomState) {
+                    detectTransformGestures { _, _, zoomChange, _ ->
+                        val state = zoomState ?: return@detectTransformGestures
+                        val newRatio = (state.zoomRatio * zoomChange)
+                            .coerceIn(state.minZoomRatio, state.maxZoomRatio)
+                        controller.cameraControl?.setZoomRatio(newRatio)
+                        Log.d("CameraScreen", "Zoom changed: newRatio=$newRatio")
                     }
                 }
+                .pointerInput(controller) {
+                    detectTapGestures { offset ->
+                        Log.d("CameraScreen", "Tap detected at: x=${offset.x}, y=${offset.y}, layoutSize=$size")
+                        Log.d("CameraScreen", "PreviewView available: ${previewView != null}, meteringPointFactory available: ${previewView?.meteringPointFactory != null}")
+                        
+                        focusOnPoint(
+                            offset = offset,
+                            layoutSize = size,
+                            previewView = previewView,
+                            factory = previewView?.meteringPointFactory,
+                            controller = controller
+                        )
+                        
+                        Log.d("CameraScreen", "Setting focusPoint to offset")
+                        focusPoint = offset
+                    }
+                }
+        )
+
+        // Вспышка при фото
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color.White.copy(alpha = flashAlpha))
+        )
+
+        // Анимация фокуса
+        focusPoint?.let { point ->
+            AnimatedVisibility(
+                visible = true,
+                enter = fadeIn(tween(100)),
+                exit = fadeOut(tween(200)),
+                modifier = Modifier
+                    .offset {
+                        IntOffset(
+                            (point.x - 24.dp.toPx()).roundToInt(),
+                            (point.y - 24.dp.toPx()).roundToInt()
+                        )
+                    }
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(48.dp)
+                        .border(2.dp, Color.White, CircleShape)
+                )
+            }
+        }
+
+        // Индикатор записи
+        AnimatedVisibility(
+            visible = mode == CameraMode.Video && isRecording,
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .padding(top = 64.dp)
+        ) {
+            RecordingIndicator(durationMs = durationMs)
+        }
+
+        // Кнопка смены камеры (справа вверху)
+        IconButton(
+            onClick = {
+                val newSelector = if (cameraSelector == CameraSelector.DEFAULT_BACK_CAMERA) {
+                    CameraSelector.DEFAULT_FRONT_CAMERA
+                } else {
+                    CameraSelector.DEFAULT_BACK_CAMERA
+                }
+                
+                if (isRecording && mode == CameraMode.Video) {
+                    val hasAudio = checkPermissions(context, listOf(Manifest.permission.RECORD_AUDIO))
+                    viewModel.switchCameraDuringRecording(
+                        controller = controller,
+                        hasAudioPermission = hasAudio,
+                        onCameraSwitched = { cameraSelector = newSelector },
+                        onError = { showMessage(scope, snackbarHostState, it) }
+                    )
+                } else {
+                    cameraSelector = newSelector
+                }
+            },
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .padding(16.dp)
+                .size(48.dp)
+        ) {
+            Icon(
+                imageVector = Icons.Default.FlipCameraAndroid,
+                contentDescription = "Сменить камеру",
+                tint = Color.White,
+                modifier = Modifier.size(32.dp)
             )
-        },
-        bottomBar = {
-            CameraControls(
-                mode = mode,
-                isRecording = isRecording,
-                onCapture = {
+        }
+
+        // Нижняя панель управления
+        Column(
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .fillMaxWidth()
+                .padding(bottom = 32.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(24.dp)
+        ) {
+            // Кнопка захвата
+            IconButton(
+                onClick = {
                     when (mode) {
                         CameraMode.Photo -> {
+                            Log.d("CameraScreen", "Photo capture button clicked")
                             viewModel.takePhoto(
                                 controller = controller,
-                                onResult = {
-                                    showFlash = true
+                                onResult = { uri ->
+                                    Log.d("CameraScreen", "Photo captured successfully: $uri")
                                     scope.launch {
-                                        delay(120)
+                                        // Небольшая задержка для рендеринга
+                                        delay(16) // 1 frame @ 60fps
+                                        Log.d("CameraScreen", "Triggering flash animation: showFlash=true")
+                                        showFlash = true
+                                        delay(150) // Держим вспышку дольше
+                                        Log.d("CameraScreen", "Hiding flash after 150ms: showFlash=false")
                                         showFlash = false
                                     }
                                 },
-                                onError = { showMessage(scope, snackbarHostState, it) }
+                                onError = { error ->
+                                    Log.e("CameraScreen", "Photo capture failed: $error")
+                                    showMessage(scope, snackbarHostState, error)
+                                }
                             )
                         }
                         CameraMode.Video -> {
@@ -597,10 +703,7 @@ private fun CameraScreen(
                                     onError = { showMessage(scope, snackbarHostState, it) }
                                 )
                             } else {
-                                val hasAudio = checkPermissions(
-                                    context,
-                                    listOf(Manifest.permission.RECORD_AUDIO)
-                                )
+                                val hasAudio = checkPermissions(context, listOf(Manifest.permission.RECORD_AUDIO))
                                 viewModel.startVideoRecording(
                                     controller = controller,
                                     hasAudioPermission = hasAudio,
@@ -611,85 +714,13 @@ private fun CameraScreen(
                         }
                     }
                 },
-                onGallery = onOpenGallery
-            )
-        }
-    ) { padding ->
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(padding)
-                .background(Color.Black)
-        ) {
-            AndroidView(
-                factory = { viewContext ->
-                    PreviewView(viewContext).apply {
-                        scaleType = PreviewView.ScaleType.FILL_CENTER
-                        implementationMode = PreviewView.ImplementationMode.COMPATIBLE
-                        this.controller = controller
-                        previewView = this
-                    }
-                },
                 modifier = Modifier
-                    .fillMaxSize()
-                    .pointerInput(controller, zoomState) {
-                        detectTransformGestures { _, _, zoomChange, _ ->
-                            val state = zoomState ?: return@detectTransformGestures
-                            val newRatio = (state.zoomRatio * zoomChange)
-                                .coerceIn(state.minZoomRatio, state.maxZoomRatio)
-                            controller.cameraControl?.setZoomRatio(newRatio)
-                        }
-                    }
-                    .pointerInput(controller) {
-                        detectTapGestures { offset ->
-                            focusOnPoint(
-                                offset = offset,
-                                layoutSize = size,
-                                previewView = previewView,
-                                factory = previewView?.meteringPointFactory,
-                                controller = controller
-                            )
-                            autofocusRequest = UUID.randomUUID() to offset
-                        }
-                    }
-            )
-
-            AnimatedVisibility(
-                visible = mode == CameraMode.Video && isRecording,
-                modifier = Modifier
-                    .align(Alignment.TopCenter)
-                    .padding(top = 16.dp)
-            ) {
-                RecordingIndicator(durationMs = durationMs)
-            }
-
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .background(Color.White.copy(alpha = flashAlpha))
-            )
-
-            AnimatedVisibility(
-                visible = showAutofocusIndicator && autofocusCoords.isSpecified,
-                enter = fadeIn(),
-                exit = fadeOut(),
-                modifier = Modifier
-                    .align(Alignment.TopStart)
-                    .offset {
-                        val half = with(density) { 24.dp.toPx() }.roundToInt()
-                        val coords = if (autofocusCoords.isSpecified) autofocusCoords else Offset.Zero
-                        IntOffset(
-                            coords.x.roundToInt() - half,
-                            coords.y.roundToInt() - half
-                        )
-                    }
-            ) {
-                Spacer(
-                    modifier = Modifier
-                        .size(48.dp)
-                        .border(2.dp, Color.White, CircleShape)
-                )
-            }
+                    .size(72.dp)
+                    .background(
+                        if (isRecording) Color.Red else Color.White,
+                        shape = if (isRecording) RoundedCornerShape(12.dp) else CircleShape
+                    )
+            ) {}
         }
     }
 }
@@ -719,77 +750,6 @@ private fun RecordingIndicator(durationMs: Long) {
     }
 }
 
-@Composable
-private fun CameraControls(
-    mode: CameraMode,
-    isRecording: Boolean,
-    onCapture: () -> Unit,
-    onGallery: () -> Unit
-) {
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .navigationBarsPadding(),
-        verticalArrangement = Arrangement.Bottom
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 24.dp, vertical = 12.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            IconButton(onClick = onGallery) {
-                Icon(Icons.Default.Photo, contentDescription = "Галерея")
-            }
-
-            CaptureButton(
-                isRecording = isRecording,
-                onClick = onCapture,
-                mode = mode
-            )
-
-            Spacer(modifier = Modifier.size(48.dp))
-        }
-    }
-}
-
-@Composable
-private fun CaptureButton(
-    isRecording: Boolean,
-    onClick: () -> Unit,
-    mode: CameraMode
-) {
-    val color = when {
-        mode == CameraMode.Video && isRecording -> Color.Red
-        else -> Color.White
-    }
-    val size = if (mode == CameraMode.Video && isRecording) 70.dp else 78.dp
-    Box(
-        contentAlignment = Alignment.Center,
-        modifier = Modifier
-            .size(92.dp)
-            .background(Color.White.copy(alpha = 0.2f), shape = MaterialTheme.shapes.extraLarge)
-    ) {
-        Button(
-            onClick = onClick,
-            modifier = Modifier
-                .size(size),
-            shape = MaterialTheme.shapes.extraLarge,
-            contentPadding = PaddingValues(0.dp),
-            colors = ButtonDefaults.buttonColors(
-                containerColor = Color.White,
-                contentColor = color
-            )
-        ) {
-            Icon(
-                imageVector = if (mode == CameraMode.Video) Icons.Default.Movie else Icons.Default.CameraAlt,
-                contentDescription = null,
-                tint = color
-            )
-        }
-    }
-}
 
 private fun focusOnPoint(
     offset: androidx.compose.ui.geometry.Offset,
@@ -798,16 +758,36 @@ private fun focusOnPoint(
     factory: MeteringPointFactory?,
     controller: LifecycleCameraController
 ) {
-    val view = previewView ?: return
-    val meteringFactory = factory ?: return
-    val point = meteringFactory.createPoint(
-        offset.x / layoutSize.width * view.width,
-        offset.y / layoutSize.height * view.height
-    )
+    Log.d("CameraScreen", "focusOnPoint called: offset=$offset, layoutSize=$layoutSize")
+    
+    val view = previewView ?: run {
+        Log.e("CameraScreen", "focusOnPoint: previewView is null, returning")
+        return
+    }
+    
+    val meteringFactory = factory ?: run {
+        Log.e("CameraScreen", "focusOnPoint: meteringPointFactory is null, returning")
+        return
+    }
+    
+    Log.d("CameraScreen", "PreviewView size: width=${view.width}, height=${view.height}")
+    
+    val normalizedX = offset.x / layoutSize.width * view.width
+    val normalizedY = offset.y / layoutSize.height * view.height
+    Log.d("CameraScreen", "Normalized coordinates: x=$normalizedX, y=$normalizedY")
+    
+    val point = meteringFactory.createPoint(normalizedX, normalizedY)
+    Log.d("CameraScreen", "MeteringPoint created: $point")
+    
     val action = FocusMeteringAction.Builder(point, FocusMeteringAction.FLAG_AF)
         .setAutoCancelDuration(3, TimeUnit.SECONDS)
         .build()
-    controller.cameraControl?.startFocusAndMetering(action)
+    
+    controller.cameraControl?.startFocusAndMetering(action)?.addListener({
+        Log.d("CameraScreen", "Focus and metering action completed")
+    }, ContextCompat.getMainExecutor(view.context))
+    
+    Log.d("CameraScreen", "Focus and metering action started")
 }
 
 private fun buildRequiredPermissions(): List<String> {
