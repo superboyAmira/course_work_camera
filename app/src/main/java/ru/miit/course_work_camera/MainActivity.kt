@@ -483,6 +483,7 @@ private fun CameraScreen(
     var cameraSelector by remember { mutableStateOf(CameraSelector.DEFAULT_BACK_CAMERA) }
     var showFlash by remember { mutableStateOf(false) }
     var focusPoint by remember { mutableStateOf<Offset?>(null) }
+    var activeZoomFuture by remember { mutableStateOf<com.google.common.util.concurrent.ListenableFuture<Void>?>(null) }
     
     val isRecording by viewModel.isRecording.collectAsState()
     val durationMs by viewModel.recordingDurationMs.collectAsState()
@@ -542,11 +543,55 @@ private fun CameraScreen(
                 .fillMaxSize()
                 .pointerInput(controller, zoomState) {
                     detectTransformGestures { _, _, zoomChange, _ ->
-                        val state = zoomState ?: return@detectTransformGestures
-                        val newRatio = (state.zoomRatio * zoomChange)
-                            .coerceIn(state.minZoomRatio, state.maxZoomRatio)
-                        controller.cameraControl?.setZoomRatio(newRatio)
-                        Log.d("CameraScreen", "Zoom changed: newRatio=$newRatio")
+                        val state = zoomState ?: run {
+                            Log.w("CameraScreen", "Zoom gesture detected but zoomState is null")
+                            return@detectTransformGestures
+                        }
+                        
+                        val currentRatio = state.zoomRatio
+                        val minRatio = state.minZoomRatio
+                        val maxRatio = state.maxZoomRatio
+                        val newRatio = (currentRatio * zoomChange).coerceIn(minRatio, maxRatio)
+                        
+                        // Пропускаем если изменение минимальное
+                        if (kotlin.math.abs(newRatio - currentRatio) < 0.01f) {
+                            return@detectTransformGestures
+                        }
+                        
+                        Log.d("CameraScreen", "Zoom gesture: change=$zoomChange, current=$currentRatio, new=$newRatio, range=[$minRatio, $maxRatio]")
+                        
+                        val cameraControl = controller.cameraControl
+                        if (cameraControl == null) {
+                            Log.e("CameraScreen", "CameraControl is null, cannot apply zoom")
+                            return@detectTransformGestures
+                        }
+                        
+                        // Отменяем предыдущий запрос зума
+                        activeZoomFuture?.cancel(true)
+                        
+                        Log.d("CameraScreen", "Applying zoom via setZoomRatio($newRatio)")
+                        
+                        val future = cameraControl.setZoomRatio(newRatio)
+                        activeZoomFuture = future
+                        
+                        future.addListener({
+                            try {
+                                future.get()
+                                Log.d("CameraScreen", "Zoom applied successfully: $newRatio")
+                            } catch (e: java.util.concurrent.CancellationException) {
+                                // Это нормально - новый запрос отменил предыдущий
+                                Log.d("CameraScreen", "Zoom cancelled (replaced by newer request)")
+                            } catch (e: java.util.concurrent.ExecutionException) {
+                                if (e.cause is androidx.camera.core.CameraControl.OperationCanceledException) {
+                                    // Это тоже нормально - CameraX отменил операцию
+                                    Log.d("CameraScreen", "Zoom operation cancelled by CameraX")
+                                } else {
+                                    Log.e("CameraScreen", "Failed to apply zoom: ${e.message}")
+                                }
+                            } catch (e: Exception) {
+                                Log.e("CameraScreen", "Unexpected zoom error: ${e.message}")
+                            }
+                        }, ContextCompat.getMainExecutor(context))
                     }
                 }
                 .pointerInput(controller) {
